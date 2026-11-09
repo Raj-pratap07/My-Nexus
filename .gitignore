@@ -29,3 +29,35 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Local databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Coverage / test tooling
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# Key material
+*.pem
+*.key
+*.p12
+
+# Node / frontend
+node_modules/
+
+# Tauri (desktop app)
+src-tauri/target/
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/
+
+# Claude Code local settings
+.claude/settings.local.json

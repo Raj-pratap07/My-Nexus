@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
+
+from app.mcp.argument_policy import (
+    DEFAULT_ARGUMENT_GUARDS,
+    ArgumentGuard,
+    ArgumentPolicyError,
+)
 
 
 class ToolPolicy:
@@ -17,8 +23,19 @@ class ToolPolicy:
     def __init__(
         self,
         allowed: Mapping[str, Iterable[str]] | None = None,
+        argument_guards: Mapping[str, ArgumentGuard] | None = None,
+        require_guards: Iterable[str] = (),
     ) -> None:
         self._allowed: dict[str, frozenset[str]] = {}
+        # Optional per-tool argument authorization (default: none).
+        self._guards: dict[str, ArgumentGuard] = {}
+        # Servers whose tools are sensitive: a tool there is usable only
+        # while an argument guard is registered for it (fail closed).
+        self._guard_required: frozenset[str] = frozenset(require_guards)
+
+        for name, guard in (argument_guards or {}).items():
+            self.server_of(name)  # must be fully qualified
+            self._guards[name] = guard
 
         for server, tools in (allowed or {}).items():
             self.allow(server, tools)
@@ -59,14 +76,47 @@ class ToolPolicy:
             server = self.server_of(tool_name)
         except ValueError:
             return False
-        return tool_name in self.allowed_for(server)
+        if tool_name not in self.allowed_for(server):
+            return False
+        return not self._missing_required_guard(tool_name)
+
+    def _missing_required_guard(self, tool_name: str) -> bool:
+        server = self.server_of(tool_name)
+        return server in self._guard_required and tool_name not in self._guards
 
     def check(self, tool_name: str) -> None:
         """Raise PermissionError unless the tool is explicitly approved."""
+        try:
+            listed = tool_name in self.allowed_for(self.server_of(tool_name))
+        except ValueError:
+            listed = False
+        if listed and self._missing_required_guard(tool_name):
+            raise ArgumentPolicyError(
+                f"MCP tool '{tool_name}' is blocked: its required argument "
+                "guard is not configured."
+            )
         if not self.is_allowed(tool_name):
             raise PermissionError(
                 f"MCP tool '{tool_name}' is not permitted by policy."
             )
+
+    def check_arguments(
+        self, tool_name: str, arguments: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """
+        Authorize arguments for a tool and return the normalized arguments
+        to send. Tools without a guard pass through unchanged. Raises
+        ArgumentPolicyError (a PermissionError) if not authorized.
+        """
+        guard = self._guards.get(tool_name)
+        if guard is None:
+            if self.server_of(tool_name) in self._guard_required:
+                raise ArgumentPolicyError(
+                    f"MCP tool '{tool_name}' is blocked: its required "
+                    "argument guard is not configured."
+                )
+            return dict(arguments or {})
+        return guard(arguments or {})
 
 
 def default_policy() -> ToolPolicy:
@@ -78,5 +128,7 @@ def default_policy() -> ToolPolicy:
                 "research.search_openalex_works",
                 "research.search_crossref_works",
             ],
-        }
+        },
+        argument_guards=DEFAULT_ARGUMENT_GUARDS,
+        require_guards=("github",),
     )

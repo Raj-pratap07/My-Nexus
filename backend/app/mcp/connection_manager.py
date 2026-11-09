@@ -224,9 +224,13 @@ class MCPConnectionManager:
 
         self._policy.check(name)
 
+        # Argument-level authorization; the normalized arguments are what
+        # is sent, so the server never sees the unvalidated originals.
+        safe_arguments = self._policy.check_arguments(name, arguments)
+
         return await self._group.call_tool(
             name,
-            arguments=arguments or {},
+            arguments=safe_arguments,
         )
 
 
