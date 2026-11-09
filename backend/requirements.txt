@@ -1,0 +1,10 @@
+# Direct runtime dependencies of the My-Nexus backend.
+# Test-only packages live in requirements-dev.txt.
+mcp==2.3.0
+python-dotenv==1.2.4
+jsonschema==4.26.0
+fastapi==0.162.2
+uvicorn==0.54.0
+SQLAlchemy[asyncio]==2.1.8
+alembic==1.20.1
+psycopg[binary]==3.3.8

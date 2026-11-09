@@ -1,0 +1,4 @@
+# Everything needed to run the offline test suites.
+-r requirements.txt
+# SQLite backend used by the offline database/API tests (production uses PostgreSQL).
+aiosqlite==0.22.1
