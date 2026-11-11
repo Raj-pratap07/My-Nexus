@@ -31,6 +31,9 @@ def main() -> int:
         host=settings.host,
         port=settings.port,
         log_level="info",
+        # Async psycopg cannot run on Windows' ProactorEventLoop, which
+        # uvicorn selects there by default; use a SelectorEventLoop instead.
+        loop="asyncio:SelectorEventLoop" if sys.platform == "win32" else "auto",
     )
     return 0
 

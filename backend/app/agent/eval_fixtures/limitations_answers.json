@@ -1,0 +1,236 @@
+{
+  "description": "Hand-labelled answers to the README known-limitations follow-up, used to validate app/agent/grounding_judge.py before it gates anything. Each case is graded against the local checkout's README.md. 'expected.failed_checks' is the exact set of checks a correct grader must report (empty = must pass); labels come from reading each answer against README.md '## Known limitations' (five items), never from the grader's output. 'grader_known_disagreement' records a case where the label is correct but the lexical grader cannot reproduce it; the test pins that disagreement so any change is noticed.",
+  "source": "README.md (repository root, local checkout)",
+  "cases": [
+    {
+      "id": "complete-paraphrased",
+      "description": "All five items, reworded, statuses kept as the README gives them.",
+      "provenance": "hand-written",
+      "answer": "The README lists five known limitations:\n\n1. **Authentication** relies on a single static local token, so anyone who holds it is treated as the user. The API should not be exposed to a network.\n2. **PostgreSQL**: the project has not yet been tested against PostgreSQL.\n3. **No rate limiting**: there are no per-user quotas, and because the per-conversation lock is kept in memory, only a single worker process should be run.\n4. **Research records** include titles and metadata but no abstracts, so any model summary of a paper's content is inferred from its title.\n5. **Long-term memory** exists only as a schema.",
+      "expected": {
+        "failed_checks": []
+      },
+      "split": "development"
+    },
+    {
+      "id": "concise-bullets",
+      "description": "Terse bullets covering all five items.",
+      "provenance": "hand-written",
+      "answer": "- Single static local token for authentication; do not expose the API to a network.\n- Not tested against PostgreSQL.\n- No rate limiting or per-user quotas; in-memory lock, single worker process.\n- No abstracts in research records.\n- Long-term memory is schema only.",
+      "expected": {
+        "failed_checks": []
+      },
+      "split": "development"
+    },
+    {
+      "id": "prose",
+      "description": "All five items in one paragraph, no list markup.",
+      "provenance": "hand-written",
+      "answer": "According to the README, My-Nexus has five documented limitations. Authentication is a single static local token, so whoever holds it is the user, and the API must not be exposed to a network. It has not yet been tested against PostgreSQL. There is no rate limiting and there are no per-user quotas; the per-conversation lock is in-memory, so only a single worker process should run. Research records contain titles and metadata without abstracts, which means summaries of a paper's content are inference from its title. Finally, long-term memory is schema only.",
+      "expected": {
+        "failed_checks": []
+      },
+      "split": "development"
+    },
+    {
+      "id": "missing-limitation",
+      "description": "Omits the research-abstracts item; everything else correct.",
+      "provenance": "hand-written",
+      "answer": "- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Long-term memory is schema only.",
+      "expected": {
+        "failed_checks": [
+          "completeness"
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "invented-limitation",
+      "description": "All five items plus a limitation the README never states.",
+      "provenance": "hand-written",
+      "answer": "- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is schema only.\n- There is no HTTPS support, so traffic between client and server is unencrypted.",
+      "expected": {
+        "failed_checks": [
+          "unsupported"
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "outside-section-claim",
+      "description": "All five items plus a real README statement that is not in the Known limitations section, presented as a limitation.",
+      "provenance": "hand-written; the extra bullet paraphrases README line 59",
+      "answer": "- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is schema only.\n- Prompt injection is not prevented.",
+      "expected": {
+        "failed_checks": [
+          "unsupported"
+        ],
+        "outside_section": [
+          "Prompt injection is not prevented."
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "compound-unsupported-addition",
+      "description": "A correct authentication bullet with an unsupported second sentence (OAuth/MFA) in the same bullet.",
+      "provenance": "hand-written; the user's compound-claim example",
+      "answer": "- Authentication uses a static local token. The system also lacks OAuth and multi-factor authentication.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is schema only.",
+      "expected": {
+        "failed_checks": [
+          "unsupported"
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "memory-described-as-implemented",
+      "description": "Long-term memory presented as fully implemented (the README says schema only).",
+      "provenance": "hand-written",
+      "answer": "- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is fully implemented.",
+      "expected": {
+        "failed_checks": [
+          "polarity_lost"
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "postgresql-described-as-planned",
+      "description": "PostgreSQL testing given a planned status the README does not give.",
+      "provenance": "hand-written",
+      "answer": "- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- PostgreSQL testing is planned for a later release.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is schema only.",
+      "expected": {
+        "failed_checks": [
+          "polarity_lost",
+          "status_invented"
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "misquoted-source",
+      "description": "Correct content, but one quotation is not the README's wording.",
+      "provenance": "hand-written",
+      "answer": "- The README warns that \"authentication uses one shared password for every user\".\n- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is \"schema only\".",
+      "expected": {
+        "failed_checks": [
+          "quote_fidelity",
+          "unsupported"
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "turn1-summary-only",
+      "description": "Built only from the Turn 1 summary in eval_fixtures/readme_followup.json, which never contained the Known limitations section.",
+      "provenance": "hand-written from the fixture's Turn 1 'Notes' and 'Data Model' sections",
+      "answer": "Based on the README, the known limitations are:\n\n1. The project is in early development and intended for local use only.\n2. No frontend exists yet; a web UI and Tauri desktop app are planned.\n3. Prompt injection is not prevented; code-level controls are the primary defense.\n4. Memories are schema only, with no behavior yet.",
+      "expected": {
+        "failed_checks": [
+          "completeness",
+          "unsupported"
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "failed-turn2-reconstructed",
+      "description": "NOT the full original answer. Reconstructed only from the five passages the original failed Turn 2 answer presented as README quotations (TURN2_MISQUOTES in test_github_prompt_eval.py). The full original answer is not stored in the repository.",
+      "provenance": "reconstructed; export the real message from the API to replace this case",
+      "answer": "The README describes these limitations:\n\n- \"Tool outputs are treated as untrusted data in the prompt, but prompt injection is not prevented—code-level controls are the primary defense.\"\n- \"a web UI and Tauri desktop app are planned to share this backend\"\n- \"memories (schema only, no behavior yet)\"\n- The backend \"exits with clear error messages\".\n- \"The project is in early development and intended for local use only.\"",
+      "expected": {
+        "failed_checks": [
+          "completeness",
+          "unsupported",
+          "quote_fidelity"
+        ]
+      },
+      "split": "development"
+    },
+    {
+      "id": "status-not-specified",
+      "description": "Follows the Phase-2 status instruction: states status only where the README supports it, otherwise says it is not specified.",
+      "provenance": "hand-written",
+      "answer": "1. Authentication is a single static local token, so anyone holding it is the user; do not expose the API to a network. Status: not specified.\n2. Not yet tested against PostgreSQL. Status: the README says testing has not happened yet.\n3. No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process. Status: not specified.\n4. Research records have titles and metadata but no abstracts. Status: not specified.\n5. Long-term memory is schema only. Status: the README does not say whether it is planned.",
+      "expected": {
+        "failed_checks": []
+      },
+      "split": "development"
+    },
+    {
+      "id": "heldout-heavy-paraphrase",
+      "description": "Correct, but heavily reworded with headings; the network warning is phrased positively ('keep the API off any network').",
+      "answer": "### 1. Authentication\nOnly one static token exists locally; holding it makes you the user. Keep the API off any network.\n\n### 2. Databases\nNobody has tested it on PostgreSQL yet.\n\n### 3. Throughput\nThere are no rate limits or per-user quotas. The per-conversation lock lives in memory, so only a single worker process is safe.\n\n### 4. Research data\nRecords carry titles and metadata, never abstracts, so content summaries are inferred from titles.\n\n### 5. Memory\nLong-term memory is only a schema.",
+      "expected": {
+        "failed_checks": []
+      },
+      "provenance": "hand-written after the grader rules were frozen; never used for tuning",
+      "split": "formerly-held-out",
+      "grader_known_disagreement": {
+        "grader_failed_checks": [
+          "polarity_lost"
+        ],
+        "reason": "'Keep the API off any network' states the README's prohibition without a negation word; lexical polarity checking reads it as dropping the 'Do not expose' restriction. Needs human review."
+      }
+    },
+    {
+      "id": "heldout-rate-limit-reversed",
+      "description": "Rate limiting presented as present.",
+      "answer": "- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- Rate limiting is enforced per user, and the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is schema only.",
+      "expected": {
+        "failed_checks": [
+          "polarity_lost"
+        ]
+      },
+      "provenance": "hand-written after the grader rules were frozen; never used for tuning",
+      "split": "formerly-held-out"
+    },
+    {
+      "id": "heldout-addition-reusing-source-words",
+      "description": "Unsupported addition in the same sentence, built from words that do appear elsewhere in the README (Crossref, provider).",
+      "answer": "- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts, and Crossref results are capped by the provider at twenty records.\n- Long-term memory is schema only.",
+      "expected": {
+        "failed_checks": [
+          "unsupported"
+        ]
+      },
+      "provenance": "hand-written after the grader rules were frozen; never used for tuning",
+      "split": "formerly-held-out"
+    },
+    {
+      "id": "heldout-labelled-inference",
+      "description": "Correct answer plus one inference explicitly labelled as inference.",
+      "answer": "- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is schema only.\n\nInterpretation: running several workers could let two requests change one conversation at once.",
+      "expected": {
+        "failed_checks": []
+      },
+      "provenance": "hand-written after the grader rules were frozen; never used for tuning",
+      "split": "formerly-held-out"
+    },
+    {
+      "id": "heldout-partial-and-wrong-status",
+      "description": "Only two items, and PostgreSQL described as supported.",
+      "answer": "The README mentions that authentication is a single static local token, and that PostgreSQL is fully supported.",
+      "expected": {
+        "failed_checks": [
+          "completeness",
+          "polarity_lost"
+        ]
+      },
+      "provenance": "hand-written after the grader rules were frozen; never used for tuning",
+      "split": "formerly-held-out"
+    },
+    {
+      "id": "heldout-intro-and-closing",
+      "description": "Correct items wrapped in an introduction and a closing remark.",
+      "answer": "Here is what the README documents under Known limitations.\n\n- Authentication is a single static local token: anyone holding it is the user. Do not expose the API to a network.\n- Not yet tested against PostgreSQL.\n- No rate limiting or per-user quotas; the per-conversation lock is in-memory, so run a single worker process.\n- Research records contain titles and metadata but no abstracts.\n- Long-term memory is schema only.\n\nThese five items are the only limitations the README documents.",
+      "expected": {
+        "failed_checks": []
+      },
+      "provenance": "hand-written after the grader rules were frozen; never used for tuning",
+      "split": "formerly-held-out"
+    }
+  ],
+  "validation_history": "13 'development' cases were used to design the rules (first run 9/13; four rules changed). Six further cases were written and labelled with the rules frozen: 2/6 agreed. Two general rule fixes followed (clause split at comma + conjunction; extra negators), after which 5/6 agreed. Those six cases have now informed the rules and are marked 'formerly-held-out'; they are no longer an unbiased estimate. A fresh held-out set (ideally real model answers, labelled by a person) is required before gating."
+}

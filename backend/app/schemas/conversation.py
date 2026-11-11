@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
@@ -45,6 +45,16 @@ class ConversationOut(BaseModel):
     updated_at: datetime
 
 
+class ToolExecutionOut(BaseModel):
+    """Name, status and time only: arguments and results are never stored."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    tool_name: str
+    status: str            # succeeded | failed | rejected
+    created_at: datetime
+
+
 class MessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -53,17 +63,33 @@ class MessageOut(BaseModel):
     content: str
     position: int
     created_at: datetime
-
-
-class ToolExecutionOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    tool_name: str
-    status: str
+    # completed | failed. A failed turn is an assistant message whose content
+    # is a fixed, safe description and whose error_code says why.
+    status: str = "completed"
+    error_code: str | None = None
+    # Tool executions recorded for this message ([] for user messages).
+    tool_executions: list[ToolExecutionOut] = Field(default_factory=list)
 
 
 class SendMessageResponse(BaseModel):
     user_message: MessageOut
     assistant_message: MessageOut
+    # Same executions as assistant_message.tool_executions; kept for
+    # compatibility with clients written before per-message history.
     tool_executions: list[ToolExecutionOut]
     stop_reason: str
+
+
+class ErrorBody(BaseModel):
+    code: str
+    message: str
+    request_id: str
+    details: Any = None
+
+
+class ErrorResponse(BaseModel):
+    """The one JSON error shape of the API: {"error": {...}}."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    error: ErrorBody

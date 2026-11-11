@@ -89,7 +89,15 @@ class MessageRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
 
-    async def add(self, conversation: Conversation, role: str, content: str) -> Message:
+    async def add(
+        self,
+        conversation: Conversation,
+        role: str,
+        content: str,
+        *,
+        status: str = "completed",
+        error_code: str | None = None,
+    ) -> Message:
         next_pos = (
             await self._s.execute(
                 select(func.coalesce(func.max(Message.position), 0) + 1).where(
@@ -102,6 +110,8 @@ class MessageRepository:
             position=next_pos,
             role=role,
             content=content,
+            status=status,
+            error_code=error_code,
         )
         self._s.add(msg)
         await self._s.flush()
@@ -160,6 +170,26 @@ class ToolExecutionRepository:
             .order_by(ToolExecution.created_at, ToolExecution.id)
         )
         return (await self._s.execute(stmt)).scalars().all()
+
+    async def list_for_messages(
+        self, conversation: Conversation, message_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, list[ToolExecution]]:
+        """Executions of the given messages (one query), grouped by message,
+        each group in execution order. Scoped to the authorized conversation."""
+        if not message_ids:
+            return {}
+        stmt = (
+            select(ToolExecution)
+            .where(
+                ToolExecution.conversation_id == conversation.id,
+                ToolExecution.message_id.in_(list(message_ids)),
+            )
+            .order_by(ToolExecution.created_at, ToolExecution.id)
+        )
+        grouped: dict[uuid.UUID, list[ToolExecution]] = {}
+        for row in (await self._s.execute(stmt)).scalars().all():
+            grouped.setdefault(row.message_id, []).append(row)
+        return grouped
 
 
 class MemoryRepository:

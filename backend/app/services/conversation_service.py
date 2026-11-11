@@ -17,10 +17,14 @@ from typing import Any, Protocol, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.orchestrator import AgentResult
-from app.agent.providers import ProviderError
+from app.agent.providers import (
+    ProviderConnectionError,
+    ProviderError,
+    ProviderTimeoutError,
+)
 from app.core.errors import (
     AgentUnavailableError,
-    ConflictError,
+    ConversationBusyError,
     CredentialRejectedError,
     NotFoundError,
 )
@@ -37,6 +41,49 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TITLE = "New conversation"
 _SAFE_TOOL_NAME = re.compile(r"[^A-Za-z0-9_.:-]")
+
+# A failed turn is stored as an assistant message with status 'failed', one
+# of these codes, and the matching FIXED description as its content. Never
+# exception text: it can carry URLs, paths or credentials.
+TURN_FAILURES: dict[str, str] = {
+    "model_timeout": "The language model did not respond in time.",
+    "model_unreachable": "The language model could not be reached.",
+    "model_error": "The language model returned an error.",
+    "internal_error": "The request failed because of an internal error.",
+}
+
+
+def failure_code(exc: BaseException) -> str:
+    if isinstance(exc, ProviderTimeoutError):
+        return "model_timeout"
+    if isinstance(exc, ProviderConnectionError):
+        return "model_unreachable"
+    if isinstance(exc, ProviderError):
+        return "model_error"
+    return "internal_error"
+
+
+def model_history(messages: Sequence[Message]) -> list[dict[str, str]]:
+    """History for the model: drop each failed assistant message AND the user
+    message directly before it. The model never answered that turn, so if the
+    user re-sends it the model must not see the question twice. Both stay in
+    the database and the API."""
+    dropped: set[int] = set()
+    for i, m in enumerate(messages):
+        if m.status == "failed":
+            dropped.add(i)
+            if i > 0 and messages[i - 1].role == "user":
+                dropped.add(i - 1)
+    return [{"role": m.role, "content": m.content}
+            for i, m in enumerate(messages) if i not in dropped]
+
+
+@dataclass
+class MessageView:
+    """A message with the tool executions recorded for it (read model)."""
+
+    message: Message
+    tool_executions: list[ToolExecution]
 
 
 class AgentRunner(Protocol):
@@ -118,6 +165,25 @@ class ConversationService:
                 conv, limit=limit, offset=offset
             )
 
+    async def list_message_views(
+        self,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[MessageView]:
+        """One page of messages, each with its tool executions (2 queries)."""
+        async with self._sessions() as session:
+            conv = await self._owned(session, user_id, conversation_id)
+            page = await MessageRepository(session).list_for(
+                conv, limit=limit, offset=offset
+            )
+            tools = await ToolExecutionRepository(session).list_for_messages(
+                conv, [m.id for m in page]
+            )
+            return [MessageView(m, tools.get(m.id, [])) for m in page]
+
     @staticmethod
     async def _owned(
         session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID
@@ -137,7 +203,7 @@ class ConversationService:
         # One in-flight turn per conversation (check+set has no await in
         # between, so it is atomic on the event loop).
         if self._in_flight.get(conversation_id):
-            raise ConflictError("This conversation is already processing a message.")
+            raise ConversationBusyError()
         self._in_flight[conversation_id] = True
         try:
             return await self._turn(user_id, conversation_id, content)
@@ -152,12 +218,10 @@ class ConversationService:
             await UserRepository(session).get_or_create(user_id)
             conv = await self._owned(session, user_id, conversation_id)
             messages = MessageRepository(session)
-            history = [
-                {"role": m.role, "content": m.content}
-                for m in await messages.recent_for(conv, self._history_messages)
-            ]
+            recent = await messages.recent_for(conv, self._history_messages)
+            history = model_history(recent)
             user_msg = await messages.add(conv, "user", content)
-            if conv.title == DEFAULT_TITLE and not history:
+            if conv.title == DEFAULT_TITLE and not recent:
                 conv.title = _title_from(content)
             await ConversationRepository(session).touch(conv)
 
@@ -165,8 +229,19 @@ class ConversationService:
         try:
             result = await self._agent.run(content, history)
         except ProviderError as exc:
+            code = failure_code(exc)
             logger.warning("Agent run failed: %s", type(exc).__name__)
-            raise AgentUnavailableError() from None
+            failed = await self._record_failure(user_id, conversation_id, code)
+            raise AgentUnavailableError(details={
+                "reason": code,
+                "user_message_id": str(user_msg.id),
+                "assistant_message_id": str(failed.id) if failed else None,
+            }) from None
+        except Exception:
+            # Not a provider error: record the failed turn, then re-raise the
+            # ORIGINAL exception so its HTTP mapping (500) is unchanged.
+            await self._record_failure(user_id, conversation_id, "internal_error")
+            raise
 
         answer = redact(result.answer, self._secrets) or "(empty response)"
 
@@ -185,6 +260,28 @@ class ConversationService:
             await ConversationRepository(session).touch(conv)
 
         return TurnResult(user_msg, assistant_msg, executions, result.stop_reason)
+
+    async def _record_failure(
+        self, user_id: uuid.UUID, conversation_id: uuid.UUID, code: str
+    ) -> Message | None:
+        """Store the failed assistant message. Never raises: a failure here is
+        logged by type only and must not mask the agent failure the caller is
+        about to raise (including NotFound if the conversation was deleted)."""
+        try:
+            async with self._sessions() as session, session.begin():
+                conv = await self._owned(session, user_id, conversation_id)
+                failed = await MessageRepository(session).add(
+                    conv, "assistant", TURN_FAILURES[code],
+                    status="failed", error_code=code,
+                )
+                await ConversationRepository(session).touch(conv)
+            return failed
+        except Exception as exc:  # noqa: BLE001 - secondary failure, reported below
+            logger.warning(
+                "Could not record failed turn (%s) after agent failure %s.",
+                type(exc).__name__, code,
+            )
+            return None
 
     @staticmethod
     def _tool_name(record) -> str:

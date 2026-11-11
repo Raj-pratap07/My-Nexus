@@ -14,6 +14,11 @@ Design notes
     sensitive or untrusted third-party content); only name and status.
   * Message.position is a per-conversation sequence (unique) giving a
     stable order independent of clock resolution.
+  * Message.status records whether a turn completed. A turn whose agent run
+    failed is stored as an ASSISTANT message with status 'failed', an
+    error_code, and a fixed, safe description as content (never exception
+    text). CHECK constraints keep this consistent: only assistant messages can
+    fail, and error_code is set exactly when status is 'failed'.
 """
 from __future__ import annotations
 
@@ -43,6 +48,7 @@ NAMING_CONVENTION = {
 }
 
 MESSAGE_ROLES = ("user", "assistant")
+MESSAGE_STATUSES = ("completed", "failed")
 MEMORY_STATUSES = ("pending", "active", "archived")
 TOOL_STATUSES = ("succeeded", "failed", "rejected")
 
@@ -116,6 +122,15 @@ class Message(Base):
         ),
         CheckConstraint("length(content) > 0", name="content_not_empty"),
         CheckConstraint("position >= 1", name="position_positive"),
+        CheckConstraint("status IN ('completed', 'failed')", name="status_allowed"),
+        CheckConstraint(
+            "status = 'completed' OR role = 'assistant'", name="failed_only_assistant"
+        ),
+        CheckConstraint(
+            "(status = 'failed' AND error_code IS NOT NULL)"
+            " OR (status = 'completed' AND error_code IS NULL)",
+            name="error_code_iff_failed",
+        ),
         UniqueConstraint(
             "conversation_id", "position", name="uq_messages_conversation_id_position"
         ),
@@ -129,6 +144,10 @@ class Message(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="completed", server_default="completed"
+    )
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

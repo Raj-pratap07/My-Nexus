@@ -21,6 +21,13 @@ health_router = APIRouter()
 router = APIRouter(prefix="/v1", dependencies=[Depends(get_principal)])
 
 
+def message_out(message, tool_executions=()) -> MessageOut:
+    """A stored message plus the tool executions recorded for it."""
+    return MessageOut.model_validate(message).model_copy(update={
+        "tool_executions": [ToolExecutionOut.model_validate(t) for t in tool_executions],
+    })
+
+
 @health_router.get("/health")
 async def health() -> dict[str, str]:
     """Liveness only; deliberately reveals nothing about internals."""
@@ -77,9 +84,10 @@ async def list_messages(
     principal: Principal = Depends(get_principal),
     service: ConversationService = Depends(get_conversation_service),
 ):
-    return await service.list_messages(
+    views = await service.list_message_views(
         principal.user_id, conversation_id, limit=limit, offset=offset
     )
+    return [message_out(v.message, v.tool_executions) for v in views]
 
 
 @router.post(
@@ -92,9 +100,10 @@ async def send_message(
     service: ConversationService = Depends(get_conversation_service),
 ):
     turn = await service.send_message(principal.user_id, conversation_id, body.content)
+    assistant = message_out(turn.assistant_message, turn.tool_executions)
     return SendMessageResponse(
-        user_message=MessageOut.model_validate(turn.user_message),
-        assistant_message=MessageOut.model_validate(turn.assistant_message),
-        tool_executions=[ToolExecutionOut.model_validate(t) for t in turn.tool_executions],
+        user_message=message_out(turn.user_message),
+        assistant_message=assistant,
+        tool_executions=assistant.tool_executions,
         stop_reason=turn.stop_reason,
     )

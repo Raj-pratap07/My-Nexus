@@ -202,7 +202,10 @@ class OwnershipApiTests(ApiCase):
     def test_random_conversation_id_is_404_same_as_foreign(self):
         c = self.client()
         r = c.get(f"/v1/conversations/{uuid.uuid4()}", headers=HDR_A)
-        self.assertEqual((r.status_code, r.json()), (404, {"detail": "Resource not found."}))
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual({k: v for k, v in r.json()["error"].items() if k != "request_id"},
+                         {"code": "not_found", "message": "Resource not found.",
+                          "details": None})
 
 
 class ConversationFlowTests(ApiCase):
@@ -214,8 +217,9 @@ class ConversationFlowTests(ApiCase):
         body = r.json()
         self.assertEqual(body["user_message"]["content"], "Find RAG papers")
         self.assertEqual(body["assistant_message"]["content"], "Hello from the model.")
-        self.assertEqual(body["tool_executions"],
-                         [{"tool_name": "research.search_crossref_works", "status": "succeeded"}])
+        self.assertEqual([(t["tool_name"], t["status"]) for t in body["tool_executions"]],
+                         [("research.search_crossref_works", "succeeded")])
+        self.assertEqual(set(body["tool_executions"][0]), {"tool_name", "status", "created_at"})
         self.assertEqual(c.get(f"/v1/conversations/{cid}", headers=HDR_A).json()["title"], "Find RAG papers")
         self.assertEqual(c.delete(f"/v1/conversations/{cid}", headers=HDR_A).status_code, 204)
         self.assertEqual(c.get(f"/v1/conversations/{cid}", headers=HDR_A).status_code, 404)
@@ -300,7 +304,8 @@ class CredentialAndErrorTests(ApiCase):
         with self.assertLogs("app.main", level="ERROR") as logs:
             r = c.post(f"/v1/conversations/{cid}/messages", json={"content": "hi"}, headers=HDR_A)
         self.assertEqual(r.status_code, 500)
-        self.assertEqual(set(r.json()), {"detail", "request_id"})
+        self.assertEqual(set(r.json()), {"error"})
+        self.assertEqual(r.json()["error"]["code"], "internal_error")
         for leaked in ("hunter2", "internal.py", "Traceback", "RuntimeError"):
             self.assertNotIn(leaked, r.text)
         log_text = "".join(logs.output)
@@ -315,6 +320,257 @@ class CredentialAndErrorTests(ApiCase):
         text = r.json()["assistant_message"]["content"]
         self.assertNotIn(TEST_TOKEN, text)
         self.assertNotIn("ghp_", text)
+
+
+# ----- Phase 4 M1: error envelope, failed turns, tool history ------------------
+from app.agent.providers import ProviderConnectionError, ProviderTimeoutError  # noqa: E402
+from app.schemas.conversation import ErrorResponse  # noqa: E402
+
+ENVELOPE_KEYS = {"code", "message", "request_id", "details"}
+
+
+class ScriptedRuntime(FakeRuntime):
+    """Plays scripted outcomes in order: an AgentResult, or an exception to raise."""
+
+    script: list = []
+
+    async def run(self, message, history):
+        self.calls.append((message, list(history)))
+        outcome = self.script.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def scripted(*outcomes):
+    def factory(settings):
+        runtime = ScriptedRuntime(settings)
+        runtime.script = list(outcomes)
+        return runtime
+    return factory
+
+
+def tool(name, outcome, args=None):
+    return ToolCallRecord(name, name if not name.startswith("?") else None,
+                          args or {}, outcome != "rejected", None, outcome)
+
+
+def result(answer="ok", *tools):
+    return AgentResult(answer, "complete", list(tools))
+
+
+class ErrorEnvelopeTests(ApiCase):
+    def assert_error(self, r, status, code, *, details=None):
+        self.assertEqual(r.status_code, status, r.text)
+        body = r.json()
+        ErrorResponse.model_validate(body)                 # exactly {"error": {...}}
+        self.assertEqual(set(body), {"error"})
+        self.assertEqual(set(body["error"]), ENVELOPE_KEYS)
+        self.assertEqual(body["error"]["code"], code)
+        self.assertEqual(body["error"]["request_id"], r.headers["x-request-id"])
+        self.assertRegex(body["error"]["request_id"], r"^[0-9a-f]{12}$")
+        if details is not None:
+            self.assertEqual(body["error"]["details"], details)
+        return body["error"]
+
+    def test_401_missing_and_invalid_token(self):
+        c = self.client()
+        for headers in ({}, {"Authorization": "Bearer wrong"}):
+            with self.subTest(headers=headers):
+                r = c.get("/v1/conversations", headers=headers)
+                err = self.assert_error(r, 401, "unauthenticated", details=None)
+                self.assertEqual(err["message"], "Authentication required.")
+                self.assertEqual(r.headers["www-authenticate"], "Bearer")
+
+    def test_404_missing_resource_and_unknown_route(self):
+        c = self.client()
+        self.assert_error(c.get(f"/v1/conversations/{uuid.uuid4()}", headers=HDR_A),
+                          404, "not_found", details=None)
+        self.assert_error(c.get("/no/such/route", headers=HDR_A), 404, "not_found")
+
+    def test_405_keeps_the_allow_header(self):
+        r = self.client().put("/v1/conversations", headers=HDR_A, json={})
+        self.assert_error(r, 405, "method_not_allowed", details=None)
+        # Passed through from Starlette unchanged (it names the first matching
+        # route's methods, so only its presence is asserted).
+        self.assertTrue(r.headers["allow"])
+
+    def test_409_conversation_busy(self):
+        c = self.client()
+        cid = self.new_conv(c)
+        c.app.state.conversation_service._in_flight[uuid.UUID(cid)] = True
+        err = self.assert_error(c.post(f"/v1/conversations/{cid}/messages",
+                                       json={"content": "hi"}, headers=HDR_A),
+                                409, "conversation_busy", details=None)
+        self.assertEqual(err["message"], "This conversation is already processing a message.")
+
+    def test_413_request_too_large(self):
+        c = self.client()
+        r = c.post("/v1/conversations", content=b"{" + b" " * 70_000 + b"}",
+                   headers={**HDR_A, "Content-Type": "application/json"})
+        self.assert_error(r, 413, "request_too_large", details=None)
+
+    def test_422_validation_details_are_useful_and_never_echo_input(self):
+        c = self.client()
+        cid = self.new_conv(c)
+        r = c.post(f"/v1/conversations/{cid}/messages",
+                   json={"content": "x" * 8001, "role": "TOPSECRETVALUE"}, headers=HDR_A)
+        err = self.assert_error(r, 422, "validation_error")
+        self.assertEqual(err["message"], "Request validation failed.")
+        self.assertTrue(err["details"])
+        for item in err["details"]:
+            self.assertEqual(set(item), {"loc", "msg", "type"})
+        self.assertIn(["body", "content"], [d["loc"] for d in err["details"]])
+        self.assertIn("extra_forbidden", [d["type"] for d in err["details"]])
+        self.assertNotIn("TOPSECRETVALUE", r.text)
+
+    def test_422_credential_rejected(self):
+        c = self.client()
+        cid = self.new_conv(c)
+        r = c.post(f"/v1/conversations/{cid}/messages",
+                   json={"content": "use github_pat_" + "A1b2" * 10}, headers=HDR_A)
+        self.assert_error(r, 422, "credential_rejected", details=None)
+        self.assertNotIn("github_pat_", r.text)
+
+    def test_503_points_at_the_recorded_failed_turn(self):
+        c = self.client(runtime_factory=scripted(ProviderTimeoutError(
+            "Ollama did not respond within 600.0s at http://localhost:11434")))
+        cid = self.new_conv(c)
+        r = c.post(f"/v1/conversations/{cid}/messages", json={"content": "hi"}, headers=HDR_A)
+        err = self.assert_error(r, 503, "agent_unavailable")
+        self.assertEqual(err["message"], "The language model is currently unavailable.")
+        msgs = c.get(f"/v1/conversations/{cid}/messages", headers=HDR_A).json()
+        self.assertEqual(err["details"], {"reason": "model_timeout",
+                                          "user_message_id": msgs[0]["id"],
+                                          "assistant_message_id": msgs[1]["id"]})
+        for leaked in ("11434", "Ollama", "600.0"):
+            self.assertNotIn(leaked, r.text)
+
+    def test_500_is_generic_and_its_id_matches_the_log(self):
+        c = self.client(runtime_factory=scripted(RuntimeError("password=hunter2")))
+        cid = self.new_conv(c)
+        with self.assertLogs("app.main", level="ERROR") as logs:
+            r = c.post(f"/v1/conversations/{cid}/messages", json={"content": "hi"},
+                       headers=HDR_A)
+        err = self.assert_error(r, 500, "internal_error", details=None)
+        self.assertEqual(err["message"], "Internal server error.")
+        self.assertIn(f"request_id={err['request_id']}", "".join(logs.output))
+        self.assertNotIn("hunter2", r.text)
+
+    def test_every_response_carries_a_distinct_request_id(self):
+        c = self.client()
+        ids = {c.get("/health").headers["x-request-id"],
+               c.get("/v1/conversations", headers=HDR_A).headers["x-request-id"]}
+        self.assertEqual(len(ids), 2)
+
+    def test_trusted_host_400_is_the_documented_plain_text_exception(self):
+        r = self.client(base_url="http://evil.example.com").get("/health")
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(r.headers["content-type"].startswith("text/plain"))
+        self.assertRegex(r.headers["x-request-id"], r"^[0-9a-f]{12}$")
+
+
+class FailedTurnApiTests(ApiCase):
+    def test_failed_turn_is_listed_and_the_next_message_works(self):
+        c = self.client(runtime_factory=scripted(
+            result("first"), ProviderConnectionError("http://localhost:11434 down"),
+            result("third")))
+        cid = self.new_conv(c)
+        url = f"/v1/conversations/{cid}/messages"
+        self.assertEqual(c.post(url, json={"content": "one"}, headers=HDR_A).status_code, 200)
+        self.assertEqual(c.post(url, json={"content": "two"}, headers=HDR_A).status_code, 503)
+        r = c.post(url, json={"content": "two again"}, headers=HDR_A)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual((r.json()["assistant_message"]["status"],
+                          r.json()["assistant_message"]["error_code"]), ("completed", None))
+
+        msgs = c.get(url, headers=HDR_A).json()
+        self.assertEqual([(m["role"], m["status"], m["error_code"]) for m in msgs], [
+            ("user", "completed", None), ("assistant", "completed", None),
+            ("user", "completed", None), ("assistant", "failed", "model_unreachable"),
+            ("user", "completed", None), ("assistant", "completed", None)])
+        self.assertEqual(msgs[3]["content"], "The language model could not be reached.")
+        self.assertNotIn("11434", c.get(url, headers=HDR_A).text)
+        # The model's history for "two again" omits the failed pair.
+        history = FakeRuntime.instances[0].calls[2][1]
+        self.assertEqual([h["content"] for h in history], ["one", "first"])
+
+    def test_unexpected_failure_is_recorded_as_internal_error(self):
+        c = self.client(runtime_factory=scripted(RuntimeError("boom")))
+        cid = self.new_conv(c)
+        with self.assertLogs("app.main", level="ERROR"):
+            r = c.post(f"/v1/conversations/{cid}/messages", json={"content": "hi"},
+                       headers=HDR_A)
+        self.assertEqual(r.status_code, 500)
+        last = c.get(f"/v1/conversations/{cid}/messages", headers=HDR_A).json()[-1]
+        self.assertEqual((last["role"], last["status"], last["error_code"]),
+                         ("assistant", "failed", "internal_error"))
+
+
+class ToolHistoryApiTests(ApiCase):
+    def messages(self, c, cid, query=""):
+        r = c.get(f"/v1/conversations/{cid}/messages{query}", headers=HDR_A)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_messages_without_tools_have_an_empty_list(self):
+        c = self.client(runtime_factory=scripted(result("plain")))
+        cid = self.new_conv(c)
+        c.post(f"/v1/conversations/{cid}/messages", json={"content": "hi"}, headers=HDR_A)
+        msgs = self.messages(c, cid)
+        self.assertEqual([m["tool_executions"] for m in msgs], [[], []])
+
+    def test_succeeded_failed_and_rejected_tools_are_attached_in_order(self):
+        c = self.client(runtime_factory=scripted(result(
+            "done",
+            tool("github.get_file_contents", "succeeded",
+                 {"path": "SECRET_ARGUMENT_VALUE.md"}),
+            tool("research.search_openalex_works", "failed"),
+            tool("?hallucinated", "rejected"))))
+        cid = self.new_conv(c)
+        sent = c.post(f"/v1/conversations/{cid}/messages", json={"content": "go"},
+                      headers=HDR_A).json()
+        user, assistant = self.messages(c, cid)
+        self.assertEqual(user["tool_executions"], [])
+        got = assistant["tool_executions"]
+        self.assertEqual([(t["tool_name"], t["status"]) for t in got[:2]],
+                         [("github.get_file_contents", "succeeded"),
+                          ("research.search_openalex_works", "failed")])
+        self.assertEqual(got[2]["status"], "rejected")
+        self.assertTrue(got[2]["tool_name"].startswith("unknown:"))
+        for t in got:
+            self.assertEqual(set(t), {"tool_name", "status", "created_at"})
+        # Arguments are never stored, so they can never be returned.
+        self.assertNotIn("SECRET_ARGUMENT_VALUE",
+                         c.get(f"/v1/conversations/{cid}/messages", headers=HDR_A).text)
+        # Send response: same executions, top-level list kept for compatibility.
+        # (Compared by name/status: SQLite reads timestamps back without a
+        # zone, so created_at differs in format between the two on SQLite.)
+        self.assertEqual(sent["tool_executions"], sent["assistant_message"]["tool_executions"])
+        self.assertEqual([(t["tool_name"], t["status"])
+                          for t in sent["assistant_message"]["tool_executions"]],
+                         [(t["tool_name"], t["status"]) for t in got])
+
+    def test_each_assistant_message_has_only_its_own_tools_and_pages_work(self):
+        c = self.client(runtime_factory=scripted(
+            result("a", tool("research.one", "succeeded")),
+            result("b", tool("research.two", "succeeded"), tool("research.three", "failed"))))
+        cid = self.new_conv(c)
+        for text in ("q1", "q2"):
+            c.post(f"/v1/conversations/{cid}/messages", json={"content": text}, headers=HDR_A)
+        msgs = self.messages(c, cid)
+        self.assertEqual([[t["tool_name"] for t in m["tool_executions"]] for m in msgs],
+                         [[], ["research.one"], [], ["research.two", "research.three"]])
+        page = self.messages(c, cid, "?limit=1&offset=3")
+        self.assertEqual([t["tool_name"] for t in page[0]["tool_executions"]],
+                         ["research.two", "research.three"])
+
+    def test_completed_messages_report_status(self):
+        c = self.client(runtime_factory=scripted(result()))
+        cid = self.new_conv(c)
+        c.post(f"/v1/conversations/{cid}/messages", json={"content": "hi"}, headers=HDR_A)
+        for m in self.messages(c, cid):
+            self.assertEqual((m["status"], m["error_code"]), ("completed", None))
 
 
 class LayeringTests(unittest.TestCase):

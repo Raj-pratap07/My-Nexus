@@ -19,6 +19,13 @@ from typing import Any, Sequence
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3:4b-instruct"
 DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+# Context window requested from Ollama, in tokens. Sent explicitly because
+# when a prompt exceeds the server's default window (often 4096 tokens),
+# Ollama drops part of it server-side without telling the client, which would
+# silently discard tool results. A README follow-up (system prompt, history,
+# one 20,000-char tool result, answer) is roughly 8-10k tokens. Larger values
+# use more memory.
+DEFAULT_OLLAMA_NUM_CTX = 16_384
 
 
 class ProviderError(Exception):
@@ -137,10 +144,13 @@ class OllamaProvider(ChatProvider):
         temperature: float = 0.0,
         seed: int | None = 0,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        num_ctx: int | None = DEFAULT_OLLAMA_NUM_CTX,
     ) -> None:
         parsed = urllib.parse.urlparse(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError("Ollama base URL must be http(s)://host[:port].")
+        if num_ctx is not None and num_ctx < 1:
+            raise ValueError("num_ctx must be >= 1 or None (server default).")
 
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -149,6 +159,8 @@ class OllamaProvider(ChatProvider):
         self._options: dict[str, Any] = {"temperature": temperature}
         if seed is not None:
             self._options["seed"] = seed
+        if num_ctx is not None:
+            self._options["num_ctx"] = num_ctx
 
     def _post_json(self, payload: dict[str, Any]) -> Any:
         """Blocking HTTP POST; run via ``asyncio.to_thread``."""
