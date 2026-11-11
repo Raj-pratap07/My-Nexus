@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+/*
+ * BLUEGOLD theme. Colour values mirror src/design/tokens.ts exactly
+ * (enforced by src/design/tokens.test.ts).
+ */
+@theme {
+  --color-abyss: #05070D;
+  --color-navy: #0A1428;
+  --color-navy-2: #10203F;
+  --color-electric: #3D8BFF;
+  --color-electric-glow: #7FB2FF;
+  --color-champagne: #E6C98F;
+  --color-champagne-deep: #C9A961;
+  --color-ink: #E8ECF4;
+  --color-ink-muted: #9AA6BD;
+  --color-danger: #FF9A8F;
+
+  --font-display: "Space Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Space Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --ease-premium: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  html {
+    background-color: var(--color-abyss);
+    color: var(--color-ink);
+    color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100svh;
+    font-family: var(--font-sans);
+    background:
+      radial-gradient(120% 80% at 70% 0%, rgb(16 32 63 / 0.55), transparent 60%),
+      var(--color-abyss);
+  }
+
+  ::selection {
+    background-color: rgb(230 201 143 / 0.35);
+    color: var(--color-ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-champagne);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+}
+
+/* Users who ask for reduced motion get no smooth scrolling or transitions. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
